@@ -15,8 +15,33 @@ from views.accounts import page_accounts
 from views.payroll import page_payroll
 
 
+def _top_safe_css():
+    """
+    Fix: page appears cropped at the top / header overlaps.
+    Keep it minimal and safe for Streamlit 1.54+.
+    """
+    st.markdown(
+        """
+        <style>
+        /* Give the whole app breathing room from the very top */
+        .block-container { padding-top: 1.25rem !important; }
+
+        /* Sidebar top spacing so logo isn't stuck/cropped */
+        section[data-testid="stSidebar"] .block-container { padding-top: 1rem !important; }
+
+        /* Prevent images from being visually cropped in some layouts */
+        img { object-fit: contain; }
+
+        /* Hide Streamlit default menu/footer (optional, but helps clean layout) */
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
 def _is_master_df(df) -> bool:
-    """Unfiltered master usually has driver id + name columns at minimum."""
     if df is None:
         return False
     try:
@@ -27,7 +52,6 @@ def _is_master_df(df) -> bool:
 
 
 def _is_filtered_df(df) -> bool:
-    """Filtered/prioritized df often has 'ترتيب المتابعة' and/or 'أولوية'."""
     if df is None:
         return False
     try:
@@ -42,81 +66,85 @@ def _split_master_and_filtered(result):
     build_master_from_uploads may return:
       - (f, master)
       - (master, f)
-      - (None, None)
-    This detects and returns: (master_all, f)
+    We normalize to: (master_all, f)
     """
-    master_all, f = None, None
-
     if not isinstance(result, (tuple, list)) or len(result) != 2:
         return None, None
 
     a, b = result[0], result[1]
 
-    # If one looks like filtered and the other looks like master, assign accordingly
+    # (filtered, master)
     if _is_filtered_df(a) and _is_master_df(b):
-        f, master_all = a, b
-    elif _is_master_df(a) and _is_filtered_df(b):
-        master_all, f = a, b
-    else:
-        # If both look like master (or both unknown), prefer:
-        # - master_all = one with more rows
-        # - f = other (or same)
-        try:
-            if _is_master_df(a) and _is_master_df(b):
-                # pick larger as master
-                if len(a) >= len(b):
-                    master_all, f = a, b
-                else:
-                    master_all, f = b, a
-            else:
-                # fallback: assume old order (f, master)
-                f, master_all = a, b
-        except Exception:
-            f, master_all = a, b
+        return b, a
 
-    return master_all, f
+    # (master, filtered)
+    if _is_master_df(a) and _is_filtered_df(b):
+        return a, b
+
+    # both master-ish -> pick larger as master
+    try:
+        if _is_master_df(a) and _is_master_df(b):
+            if len(a) >= len(b):
+                return a, b
+            return b, a
+    except Exception:
+        pass
+
+    # fallback assume old order (f, master)
+    return b, a
 
 
 def main():
-    # Page setup
+    # 1) Config first
     init_page()
+
+    # 2) Fix top cropping BEFORE anything else renders
+    _top_safe_css()
+
+    # 3) Your app CSS
     apply_css()
+
+    # 4) DB ready
     init_db()
 
-    # Login
+    # 5) Login (this should render the sidebar logo inside require_login)
     role = require_login()
 
-    # Sidebar controls (uploader + checklist + filters)
+    # 6) Sidebar controls (uploader + checklist + filters)
     uploaded_files, enabled_files, search, min_delivery, max_cancel = sidebar_controls(role)
 
-    # Announcements: everyone sees; only الإدارة + التشغيل manage (handled inside core.ui)
+    # 7) Announcements (everyone sees; only الإدارة + التشغيل manage)
     sidebar_announcements(role)
 
-    # Header (images + title)
+    # 8) Header images/title (this is where your left/right images should appear)
     render_header()
 
-    # Build data
-    # IMPORTANT: we want BOTH master_all (unfiltered) and f (filtered)
+    # 9) Build data
     result = build_master_from_uploads(enabled_files, search, min_delivery, max_cancel)
     master_all, f = _split_master_and_filtered(result)
 
-    # Route by role
+    # 10) Route by role (NO extra menu)
     if role == "الإدارة":
-        # Admin pages usually need the filtered priority table + sometimes overall metrics
-        # If your admin page only accepts one df, we pass f.
-        # If it accepts two, update the view file (not here).
-        page_admin(master_all, f) if page_admin.__code__.co_argcount >= 2 else page_admin(f)
+        # prefer signature (master_all, f) if supported
+        try:
+            page_admin(master_all, f)
+        except TypeError:
+            page_admin(f)
 
     elif role == "التشغيل":
-        # Ops NEEDS master_all for driver lookup + f for priority tables
-        page_ops(master_all, f) if page_ops.__code__.co_argcount >= 2 else page_ops(f)
+        try:
+            page_ops(master_all, f)
+        except TypeError:
+            page_ops(f)
 
     elif role == "الموارد البشرية":
         page_hr()
 
     elif role == "الإشراف":
-        # Supervision also benefits from lookup (master_all) + priority (f)
-        page_supervision(master_all, f) if page_supervision.__code__.co_argcount >= 2 else page_supervision(f)
+        try:
+            page_supervision(master_all, f)
+        except TypeError:
+            page_supervision(f)
 
     elif role == "السيارات / الحركة":
         page_fleet()
@@ -125,7 +153,6 @@ def main():
         page_accounts()
 
     elif role == "مسير الرواتب":
-        # Payroll uses ONLY the enabled payroll file(s)
         page_payroll(enabled_files)
 
     else:
