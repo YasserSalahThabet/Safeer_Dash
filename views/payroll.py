@@ -154,13 +154,6 @@ def apply_delivery_difference_rule(
     threshold: float,
     rate: float
 ) -> pd.DataFrame:
-    """
-    Creates:
-      - فارق الطلبات الناقص
-      - خصم فارق الطلبات
-      - فارق الطلبات الزائد
-      - اضافة فارق الطلبات
-    """
     df = df.copy()
 
     if orders_col not in df.columns:
@@ -182,23 +175,7 @@ def apply_delivery_difference_rule(
     return df
 
 
-def recompute_payroll(
-    df: pd.DataFrame,
-    mapping: dict
-) -> pd.DataFrame:
-    """
-    total = base + extra + overage_bonus - deductions
-    net = total
-
-    Deductions include:
-      - advances
-      - keeta
-      - late
-      - fuel
-      - supervisor
-      - general deduction
-      - shortage deduction
-    """
+def recompute_payroll(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
     df = df.copy()
 
     base_col = mapping.get("base")
@@ -259,23 +236,24 @@ if "original_sheets" not in st.session_state:
 if "loaded_file_name" not in st.session_state:
     st.session_state.loaded_file_name = None
 
+# New config state
+if "apply_diff_rule" not in st.session_state:
+    st.session_state.apply_diff_rule = True
+if "order_threshold" not in st.session_state:
+    st.session_state.order_threshold = 450.0
+if "difference_rate" not in st.session_state:
+    st.session_state.difference_rate = 9.0
+if "global_bonus" not in st.session_state:
+    st.session_state.global_bonus = 0.0
+if "global_deduction" not in st.session_state:
+    st.session_state.global_deduction = 0.0
+
 # --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
 with st.sidebar:
     st.header("📂 الملف")
     uploaded_file = st.file_uploader("ارفع ملف Excel", type=["xlsx"])
-
-    st.markdown("---")
-    st.subheader("⚙️ Global Adjustments")
-    global_bonus = st.number_input("Bonus for all employees", min_value=0.0, value=0.0, step=50.0)
-    global_deduction = st.number_input("Deduction for all employees", min_value=0.0, value=0.0, step=50.0)
-
-    st.markdown("---")
-    st.subheader("📌 Delivery Difference Settings")
-    apply_diff_rule = st.toggle("تفعيل قاعدة فارق الطلبات", value=True)
-    order_threshold = st.number_input("الحد المطلوب لعدد الطلبات", min_value=0.0, value=450.0, step=10.0)
-    difference_rate = st.number_input("سعر فارق الطلبات", min_value=0.0, value=9.0, step=1.0)
 
 # --------------------------------------------------
 # LOAD FILE
@@ -306,28 +284,6 @@ with top_right:
     if st.button("إعادة ضبط الشيت الحالي"):
         st.session_state.sheets[selected_sheet] = st.session_state.original_sheets[selected_sheet].copy()
         st.rerun()
-
-# --------------------------------------------------
-# VISIBLE SETTINGS ON PAGE
-# --------------------------------------------------
-st.markdown("### ⚙️ الإعدادات المطلوبة")
-
-set1, set2, set3, set4 = st.columns(4)
-with set1:
-    st.metric("حد الطلبات", format_money(order_threshold))
-with set2:
-    st.metric("سعر فارق الطلبات", format_money(difference_rate))
-with set3:
-    st.metric("بونس جماعي", format_money(global_bonus))
-with set4:
-    st.metric("خصم جماعي", format_money(global_deduction))
-
-st.info(
-    f"القاعدة الحالية: إذا كان عدد الطلبات أقل من {format_money(order_threshold)} "
-    f"يتم حساب خصم فارق الطلبات = (الحد - عدد الطلبات) × {format_money(difference_rate)}. "
-    f"وإذا كان عدد الطلبات أعلى من {format_money(order_threshold)} "
-    f"يتم حساب اضافة فارق الطلبات = (عدد الطلبات - الحد) × {format_money(difference_rate)}."
-)
 
 # --------------------------------------------------
 # COLUMN MAPPING
@@ -375,7 +331,83 @@ mapping = {
 }
 
 # --------------------------------------------------
-# REBUILD DISPLAY DF FROM ORIGINAL EACH RUN
+# TABS
+# --------------------------------------------------
+tab_config, tab_table, tab_driver, tab_export = st.tabs(
+    ["⚙️ الإعدادات", "📋 الجدول", "👤 تفاصيل السائق", "⬇️ التصدير"]
+)
+
+# --------------------------------------------------
+# TAB 1 - CONFIGURATION
+# --------------------------------------------------
+with tab_config:
+    st.markdown("### ⚙️ إعدادات الرواتب")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("#### إعدادات فارق الطلبات")
+        st.session_state.apply_diff_rule = st.toggle(
+            "تفعيل قاعدة فارق الطلبات",
+            value=st.session_state.apply_diff_rule,
+            key="cfg_apply_diff_rule"
+        )
+
+        st.session_state.order_threshold = st.number_input(
+            "الحد المطلوب لعدد الطلبات",
+            min_value=0.0,
+            value=float(st.session_state.order_threshold),
+            step=10.0,
+            key="cfg_order_threshold"
+        )
+
+        st.session_state.difference_rate = st.number_input(
+            "سعر فارق الطلبات",
+            min_value=0.0,
+            value=float(st.session_state.difference_rate),
+            step=1.0,
+            key="cfg_difference_rate"
+        )
+
+    with c2:
+        st.markdown("#### تعديلات جماعية")
+        st.session_state.global_bonus = st.number_input(
+            "Bonus for all employees",
+            min_value=0.0,
+            value=float(st.session_state.global_bonus),
+            step=50.0,
+            key="cfg_global_bonus"
+        )
+
+        st.session_state.global_deduction = st.number_input(
+            "Deduction for all employees",
+            min_value=0.0,
+            value=float(st.session_state.global_deduction),
+            step=50.0,
+            key="cfg_global_deduction"
+        )
+
+    st.markdown("### المعاينة الحالية")
+    v1, v2, v3, v4 = st.columns(4)
+
+    with v1:
+        st.metric("حد الطلبات", format_money(st.session_state.order_threshold))
+    with v2:
+        st.metric("سعر الفارق", format_money(st.session_state.difference_rate))
+    with v3:
+        st.metric("بونس جماعي", format_money(st.session_state.global_bonus))
+    with v4:
+        st.metric("خصم جماعي", format_money(st.session_state.global_deduction))
+
+    st.info(
+        f"إذا كان عدد الطلبات أقل من {format_money(st.session_state.order_threshold)} "
+        f"سيتم احتساب خصم فارق الطلبات = (الحد - عدد الطلبات) × {format_money(st.session_state.difference_rate)}. "
+        f"وإذا كان عدد الطلبات أعلى من {format_money(st.session_state.order_threshold)} "
+        f"سيتم احتساب إضافة فارق الطلبات = (عدد الطلبات - الحد) × {format_money(st.session_state.difference_rate)}."
+    )
+
+# --------------------------------------------------
+# BUILD DATAFRAME AFTER CONFIG
 # --------------------------------------------------
 df = base_df.copy()
 
@@ -387,29 +419,25 @@ numeric_cols = [
 ]
 df = ensure_numeric_columns(df, numeric_cols)
 
-# Keep a visible original base snapshot
 if base_col and base_col in df.columns:
     df["الراتب الأساسي الأصلي"] = safe_num_series(df[base_col]).fillna(0)
 
-# Apply global adjustments
 df = apply_global_adjustments(
     df=df,
     bonus_col=extra_col if extra_col else "بونس عام",
     deduction_col="خصم عام",
-    global_bonus=global_bonus,
-    global_deduction=global_deduction
+    global_bonus=st.session_state.global_bonus,
+    global_deduction=st.session_state.global_deduction
 )
 
-# Apply delivery difference rule
-if apply_diff_rule and orders_col:
+if st.session_state.apply_diff_rule and orders_col:
     df = apply_delivery_difference_rule(
         df=df,
         orders_col=orders_col,
-        threshold=order_threshold,
-        rate=difference_rate
+        threshold=st.session_state.order_threshold,
+        rate=st.session_state.difference_rate
     )
 
-# Recompute totals
 df = recompute_payroll(df, mapping)
 
 # --------------------------------------------------
@@ -440,17 +468,10 @@ with m4:
         st.metric("مجموع الصافي", "—")
 
 # --------------------------------------------------
-# TABS
+# TAB 2 - TABLE
 # --------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["📋 الجدول", "👤 تفاصيل السائق", "⬇️ التصدير"])
-
-# --------------------------------------------------
-# TAB 1 - TABLE
-# --------------------------------------------------
-with tab1:
+with tab_table:
     st.markdown("### ✍️ تعديل الجدول")
-
-    st.caption("يمكنك تعديل القيم مباشرة. الأعمدة المحسوبة ستظهر بوضوح في الجدول.")
 
     edited_df = st.data_editor(
         df,
@@ -463,9 +484,9 @@ with tab1:
     st.session_state.sheets[selected_sheet] = edited_df.copy()
 
 # --------------------------------------------------
-# TAB 2 - DRIVER DETAILS
+# TAB 3 - DRIVER DETAILS
 # --------------------------------------------------
-with tab2:
+with tab_driver:
     st.markdown("### 👤 تفاصيل السائق")
 
     current_df = st.session_state.sheets[selected_sheet].copy()
@@ -536,19 +557,10 @@ with tab2:
                 st.write(f"**الصافي:** {format_money(row.get(net_col, 0) if net_col else 0)}")
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            with st.expander("عرض كل بيانات السائق"):
-                all_data = pd.DataFrame({
-                    "الحقل": current_df.columns,
-                    "القيمة": [row[col] for col in current_df.columns]
-                })
-                st.dataframe(all_data, use_container_width=True, hide_index=True)
-    else:
-        st.info("اختر عمود الاسم من قسم ربط الأعمدة لعرض تفاصيل السائق.")
-
 # --------------------------------------------------
-# TAB 3 - EXPORT
+# TAB 4 - EXPORT
 # --------------------------------------------------
-with tab3:
+with tab_export:
     st.markdown("### ⬇️ تنزيل الملف")
 
     excel_data = to_excel_bytes(st.session_state.sheets)
