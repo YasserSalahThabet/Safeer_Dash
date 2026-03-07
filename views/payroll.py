@@ -25,9 +25,6 @@ HERO_IMG = pick_asset("hero.png", "left.jpg", "left.png")
 
 
 def page_payroll(enabled_files=None):
-    # --------------------------------------------------
-    # STYLE
-    # --------------------------------------------------
     st.markdown("""
     <style>
     .block-container {
@@ -80,9 +77,6 @@ def page_payroll(enabled_files=None):
     </style>
     """, unsafe_allow_html=True)
 
-    # --------------------------------------------------
-    # HELPERS
-    # --------------------------------------------------
     ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
     def normalize_text(val) -> str:
@@ -249,14 +243,12 @@ def page_payroll(enabled_files=None):
 
     def to_excel_bytes(sheets_dict: Dict[str, pd.DataFrame]) -> bytes:
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
             for sheet_name, sheet_df in sheets_dict.items():
                 sheet_df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+        output.seek(0)
         return output.getvalue()
 
-    # --------------------------------------------------
-    # SESSION STATE
-    # --------------------------------------------------
     if "payroll_sheets" not in st.session_state:
         st.session_state.payroll_sheets = {}
     if "payroll_original_sheets" not in st.session_state:
@@ -275,9 +267,6 @@ def page_payroll(enabled_files=None):
     if "payroll_global_deduction" not in st.session_state:
         st.session_state.payroll_global_deduction = 0.0
 
-    # --------------------------------------------------
-    # HEADER
-    # --------------------------------------------------
     h1, h2 = st.columns([0.08, 0.92])
     with h1:
         if LOGO_IMG.exists():
@@ -295,9 +284,6 @@ def page_payroll(enabled_files=None):
     st.markdown("### 📂 ملف الرواتب")
     uploaded_file = st.file_uploader("ارفع ملف Excel الخاص بالرواتب", type=["xlsx"], key="payroll_uploader")
 
-    # --------------------------------------------------
-    # TRY AUTO-LOAD FROM enabled_files IF AVAILABLE
-    # --------------------------------------------------
     if uploaded_file is None and enabled_files:
         for f in enabled_files:
             try:
@@ -308,9 +294,6 @@ def page_payroll(enabled_files=None):
             except Exception:
                 continue
 
-    # --------------------------------------------------
-    # LOAD FILE
-    # --------------------------------------------------
     if uploaded_file is not None:
         current_name = getattr(uploaded_file, "name", "uploaded_payroll.xlsx")
         if st.session_state.payroll_loaded_file_name != current_name:
@@ -323,9 +306,6 @@ def page_payroll(enabled_files=None):
         st.info("ارفع ملف Excel الخاص بالرواتب للبدء.")
         return
 
-    # --------------------------------------------------
-    # SHEET SELECT
-    # --------------------------------------------------
     sheet_names = list(st.session_state.payroll_sheets.keys())
     selected_sheet = st.selectbox("اختر الشيت", sheet_names, key="payroll_sheet_select")
 
@@ -339,9 +319,6 @@ def page_payroll(enabled_files=None):
             st.session_state.payroll_sheets[selected_sheet] = st.session_state.payroll_original_sheets[selected_sheet].copy()
             st.rerun()
 
-    # --------------------------------------------------
-    # COLUMN MAPPING
-    # --------------------------------------------------
     with st.expander("🔧 ربط الأعمدة", expanded=False):
         cols = [""] + list(base_df.columns)
 
@@ -384,16 +361,10 @@ def page_payroll(enabled_files=None):
         "general_deduction": "خصم عام",
     }
 
-    # --------------------------------------------------
-    # TABS
-    # --------------------------------------------------
     tab_config, tab_table, tab_driver, tab_export = st.tabs(
         ["⚙️ الإعدادات", "📋 الجدول", "👤 تفاصيل السائق", "⬇️ التصدير"]
     )
 
-    # --------------------------------------------------
-    # TAB 1 - CONFIG
-    # --------------------------------------------------
     with tab_config:
         st.markdown("### ⚙️ إعدادات الرواتب")
 
@@ -460,9 +431,6 @@ def page_payroll(enabled_files=None):
             f"فسيتم احتساب إضافة فارق الطلبات = (عدد الطلبات - الحد) × {format_money(st.session_state.payroll_difference_rate)}."
         )
 
-    # --------------------------------------------------
-    # BUILD DF
-    # --------------------------------------------------
     df = base_df.copy()
 
     numeric_cols = [
@@ -494,9 +462,6 @@ def page_payroll(enabled_files=None):
 
     df = recompute_payroll(df, mapping)
 
-    # --------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------
     st.markdown("### 📊 الملخص")
     m1, m2, m3, m4 = st.columns(4)
 
@@ -521,9 +486,6 @@ def page_payroll(enabled_files=None):
         else:
             st.metric("مجموع الصافي", "—")
 
-    # --------------------------------------------------
-    # TAB 2 - TABLE
-    # --------------------------------------------------
     with tab_table:
         st.markdown("### ✍️ تعديل الجدول")
 
@@ -537,9 +499,6 @@ def page_payroll(enabled_files=None):
 
         st.session_state.payroll_sheets[selected_sheet] = edited_df.copy()
 
-    # --------------------------------------------------
-    # TAB 3 - DRIVER DETAILS
-    # --------------------------------------------------
     with tab_driver:
         st.markdown("### 👤 تفاصيل السائق")
 
@@ -620,9 +579,6 @@ def page_payroll(enabled_files=None):
         else:
             st.info("اختر عمود الاسم من قسم ربط الأعمدة لعرض تفاصيل السائق.")
 
-    # --------------------------------------------------
-    # TAB 4 - EXPORT
-    # --------------------------------------------------
     with tab_export:
         st.markdown("### ⬇️ تنزيل الملف")
 
