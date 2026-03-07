@@ -1,5 +1,7 @@
-import streamlit as st
+import base64
 from pathlib import Path
+
+import streamlit as st
 
 from core.config import init_page, apply_css
 from core.db import init_db
@@ -22,6 +24,7 @@ from views.payroll import page_payroll
 ROOT = Path(__file__).parent
 ASSETS = ROOT / "assets"
 
+
 def pick_asset(*names: str) -> Path:
     for n in names:
         p = ASSETS / n
@@ -29,38 +32,66 @@ def pick_asset(*names: str) -> Path:
             return p
     return ASSETS / names[0]
 
+
 LEFT_IMG = pick_asset("left.jpg", "left.png", "banner.jpg", "banner.png")
 RIGHT_IMG = pick_asset("right.jpg", "right.png")
 LOGO_IMG = pick_asset("logo.png", "logo.jpg")
-FAVICON_IMG = pick_asset("favicon.png", "favicon.jpg")
+FAVICON_IMG = pick_asset("favicon.png", "favicon.jpg", "logo.png", "logo.jpg")
 
 
 def inject_global_css():
     st.markdown(
         """
         <style>
-        /* prevent top crop */
-        .block-container { padding-top: 1.2rem !important; }
+        /* Fix top crop globally */
+        .block-container {
+            padding-top: 2.4rem !important;
+            padding-bottom: 1.5rem !important;
+        }
 
-        section[data-testid="stSidebar"] .block-container { padding-top: 1rem !important; }
+        section[data-testid="stSidebar"] .block-container {
+            padding-top: 1.4rem !important;
+        }
 
         /* hide streamlit chrome */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
+        header {visibility: hidden;}
 
-        .safeer-subtitle { margin-top: -10px; opacity: 0.85; }
+        .safeer-subtitle {
+            margin-top: -4px;
+            opacity: 0.90;
+            font-size: 1rem;
+        }
+
+        .safeer-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 0.4rem;
+        }
+
+        .safeer-logo {
+            width: 56px;
+            height: 56px;
+            border-radius: 14px;
+            object-fit: contain;
+            background: rgba(255,255,255,0.04);
+            padding: 6px;
+            border: 1px solid rgba(255,255,255,0.08);
+        }
 
         /* Full-width banner */
         .safeer-banner {
             width: 100%;
-            height: 320px;           /* adjust if you want taller */
+            height: 320px;
             border-radius: 16px;
             overflow: hidden;
             background-position: center;
-            background-size: cover;  /* this makes it fill width nicely */
+            background-size: cover;
             background-repeat: no-repeat;
             box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-            margin-bottom: 16px;
+            margin-bottom: 18px;
         }
 
         @media (max-width: 900px) {
@@ -75,12 +106,9 @@ def inject_global_css():
 def render_banner():
     """
     Shows immediately on first open (before login).
-    Uses CSS background-image to force a full-width rectangular banner.
+    Uses CSS background-image for a full-width rectangular banner.
     """
     if LEFT_IMG.exists():
-        # Streamlit needs a URL it can serve; st.image gives that, but we want background-cover.
-        # We'll read bytes and embed as data URL.
-        import base64
         data = LEFT_IMG.read_bytes()
         b64 = base64.b64encode(data).decode("utf-8")
 
@@ -97,9 +125,27 @@ def render_banner():
             unsafe_allow_html=True
         )
 
-    st.markdown("# لوحة سفير - Safeer Dash")
+    logo_html = ""
+    if LOGO_IMG.exists():
+        data = LOGO_IMG.read_bytes()
+        b64 = base64.b64encode(data).decode("utf-8")
+        ext = LOGO_IMG.suffix.lower().replace(".", "")
+        if ext == "jpg":
+            ext = "jpeg"
+        logo_html = f'<img class="safeer-logo" src="data:image/{ext};base64,{b64}" alt="Safeer Logo" />'
+
     st.markdown(
-        '<div class="safeer-subtitle">الإدارة / التشغيل / الموارد البشرية / الإشراف / السيارات / الحسابات / مسير الرواتب</div>',
+        f"""
+        <div class="safeer-title-wrap">
+            {logo_html}
+            <div>
+                <h1 style="margin:0;">لوحة سفير - Safeer Dash</h1>
+                <div class="safeer-subtitle">
+                    الإدارة / التشغيل / الموارد البشرية / الإشراف / السيارات / الحسابات / مسير الرواتب
+                </div>
+            </div>
+        </div>
+        """,
         unsafe_allow_html=True
     )
     st.divider()
@@ -127,7 +173,7 @@ def _is_filtered_df(df) -> bool:
 
 def _split_master_and_filtered(result):
     """
-    Normalize result to: (master_all, f)
+    Normalize result to: (master_all, filtered_df)
     """
     if not isinstance(result, (tuple, list)) or len(result) != 2:
         return None, None
@@ -139,7 +185,6 @@ def _split_master_and_filtered(result):
     if _is_master_df(a) and _is_filtered_df(b):
         return a, b
 
-    # fallback
     return b, a
 
 
@@ -149,6 +194,7 @@ def main():
             page_title="Safeer Dash",
             page_icon=str(FAVICON_IMG) if FAVICON_IMG.exists() else "🟢",
             layout="wide",
+            initial_sidebar_state="expanded",
         )
     except Exception:
         pass
@@ -158,41 +204,40 @@ def main():
     apply_css()
     init_db()
 
-    # ✅ IMPORTANT: show banner BEFORE login so it appears on first open
+    # Show banner before login so first open looks good
     render_banner()
 
-    # Login (this may st.stop() internally if not logged in)
     role = require_login()
 
-    # Sidebar controls + announcements (post-login)
+    # Main app sidebar tools
     uploaded_files, enabled_files, search, min_delivery, max_cancel = sidebar_controls(role)
     sidebar_announcements(role)
 
-    # Build master/filtered
+    # Build operational master/filtered data for non-payroll pages
     result = build_master_from_uploads(enabled_files, search, min_delivery, max_cancel)
-    master_all, f = _split_master_and_filtered(result)
+    master_all, filtered_df = _split_master_and_filtered(result)
 
     # Route by role
     if role == "الإدارة":
         try:
-            page_admin(master_all, f)
+            page_admin(master_all, filtered_df)
         except TypeError:
-            page_admin(f)
+            page_admin(filtered_df)
 
     elif role == "التشغيل":
         try:
-            page_ops(master_all, f)
+            page_ops(master_all, filtered_df)
         except TypeError:
-            page_ops(f)
+            page_ops(filtered_df)
 
     elif role == "الموارد البشرية":
         page_hr()
 
     elif role == "الإشراف":
         try:
-            page_supervision(master_all, f)
+            page_supervision(master_all, filtered_df)
         except TypeError:
-            page_supervision(f)
+            page_supervision(filtered_df)
 
     elif role == "السيارات / الحركة":
         page_fleet()
