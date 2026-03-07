@@ -31,21 +31,6 @@ def page_payroll(enabled_files=None):
         padding-top: 2.1rem !important;
         padding-bottom: 2rem;
     }
-    .payroll-title-wrap {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        margin-bottom: 0.3rem;
-    }
-    .payroll-logo {
-        width: 54px;
-        height: 54px;
-        border-radius: 14px;
-        object-fit: contain;
-        background: rgba(255,255,255,0.03);
-        padding: 6px;
-        border: 1px solid rgba(255,255,255,0.08);
-    }
     .payroll-title {
         font-size: 2rem;
         font-weight: 800;
@@ -58,18 +43,48 @@ def page_payroll(enabled_files=None):
     }
     .payroll-card {
         padding: 1rem;
-        border-radius: 16px;
+        border-radius: 18px;
         border: 1px solid rgba(255,255,255,0.08);
         background: rgba(255,255,255,0.03);
         margin-bottom: 1rem;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.15);
     }
     .payroll-small {
         font-size: 0.9rem;
         color: #9e9e9e;
+        margin-bottom: 0.25rem;
     }
     .payroll-big {
         font-size: 1.35rem;
         font-weight: 700;
+    }
+    .detail-card {
+        padding: 1rem 1.1rem;
+        border-radius: 16px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.03);
+        height: 100%;
+    }
+    .detail-title {
+        font-size: 0.92rem;
+        color: #9e9e9e;
+        margin-bottom: 0.4rem;
+    }
+    .detail-value {
+        font-size: 1.2rem;
+        font-weight: 700;
+    }
+    .section-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin-bottom: 0.7rem;
+    }
+    .kpi-wrap {
+        padding: 0.9rem 1rem;
+        border-radius: 16px;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.08);
+        margin-bottom: 0.8rem;
     }
     div[data-testid="stTabs"] button {
         font-size: 1rem;
@@ -136,6 +151,31 @@ def page_payroll(enabled_files=None):
             df.columns = [normalize_text(c) for c in df.columns]
             sheets[sheet] = df
         return sheets
+
+    def combine_driver_names(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Merge 'اسم السائق' and 'اسم السائق 1' into one display column.
+        """
+        df = df.copy()
+
+        first_col = "اسم السائق"
+        last_col = "اسم السائق 1"
+        full_col = "اسم السائق الكامل"
+
+        if first_col in df.columns and last_col in df.columns:
+            first_names = df[first_col].fillna("").astype(str).str.strip()
+            last_names = df[last_col].fillna("").astype(str).str.strip()
+
+            df[full_col] = (first_names + " " + last_names).str.replace(r"\s+", " ", regex=True).str.strip()
+
+            insert_at = df.columns.get_loc(first_col)
+            df = df.drop(columns=[first_col, last_col])
+
+            cols = df.columns.tolist()
+            cols.insert(insert_at, cols.pop(cols.index(full_col)))
+            df = df[cols]
+
+        return df
 
     def apply_global_adjustments(
         df: pd.DataFrame,
@@ -309,20 +349,23 @@ def page_payroll(enabled_files=None):
     sheet_names = list(st.session_state.payroll_sheets.keys())
     selected_sheet = st.selectbox("اختر الشيت", sheet_names, key="payroll_sheet_select")
 
-    base_df = st.session_state.payroll_original_sheets[selected_sheet].copy()
+    # Always use the edited sheet if available, otherwise original
+    working_df = st.session_state.payroll_sheets.get(selected_sheet, st.session_state.payroll_original_sheets[selected_sheet]).copy()
+    base_df = combine_driver_names(working_df)
 
     top_left, top_right = st.columns([3, 1])
     with top_left:
         st.markdown("### بيانات الشيت")
     with top_right:
         if st.button("إعادة ضبط الشيت الحالي", key="payroll_reset_sheet"):
-            st.session_state.payroll_sheets[selected_sheet] = st.session_state.payroll_original_sheets[selected_sheet].copy()
+            original_reset = st.session_state.payroll_original_sheets[selected_sheet].copy()
+            st.session_state.payroll_sheets[selected_sheet] = original_reset
             st.rerun()
 
     with st.expander("🔧 ربط الأعمدة", expanded=False):
         cols = [""] + list(base_df.columns)
 
-        guessed_name = guess_column(base_df, ["اسم السائق", "اسم الموظف", "الاسم", "اسم"])
+        guessed_name = guess_column(base_df, ["اسم السائق الكامل", "اسم السائق", "اسم الموظف", "الاسم", "اسم"])
         guessed_orders = guess_column(base_df, ["عدد الطلبات", "عدد طلبات", "الطلبات"])
         guessed_base = guess_column(base_df, ["الراتب الأساسي", "الراتب الاساسي", "راتب أساسي", "راتب اساسي"])
         guessed_extra = guess_column(base_df, ["اضافي", "إضافي", "بونس", "مكافأة"])
@@ -497,77 +540,98 @@ def page_payroll(enabled_files=None):
             key=f"payroll_editor_{selected_sheet}"
         )
 
+        # Keep edited version in state
         st.session_state.payroll_sheets[selected_sheet] = edited_df.copy()
 
     with tab_driver:
         st.markdown("### 👤 تفاصيل السائق")
 
         current_df = st.session_state.payroll_sheets[selected_sheet].copy()
+        current_df = combine_driver_names(current_df)
 
-        if name_col and name_col in current_df.columns:
-            driver_names = current_df[name_col].fillna("").astype(str).tolist()
+        if name_col and (name_col in current_df.columns or "اسم السائق الكامل" in current_df.columns):
+            name_column = "اسم السائق الكامل" if "اسم السائق الكامل" in current_df.columns else name_col
+
+            driver_names = current_df[name_column].fillna("").astype(str).tolist()
             selected_driver = st.selectbox("اختر السائق", driver_names, key="payroll_driver_select")
 
-            driver_row = current_df[current_df[name_col].astype(str) == str(selected_driver)]
+            driver_row = current_df[current_df[name_column].astype(str) == str(selected_driver)]
 
             if not driver_row.empty:
                 row = driver_row.iloc[0]
 
-                a, b, c = st.columns(3)
+                hero1, hero2, hero3 = st.columns([1.4, 1, 1])
 
-                with a:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
-                    st.markdown('<div class="payroll-small">الاسم</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="payroll-big">{row.get(name_col, "")}</div>', unsafe_allow_html=True)
+                with hero1:
+                    st.markdown('<div class="detail-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="detail-title">اسم السائق</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="detail-value">{row.get(name_column, "")}</div>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
 
-                with b:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
-                    st.markdown('<div class="payroll-small">عدد الطلبات</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="payroll-big">{format_money(row.get(orders_col, 0) if orders_col else 0)}</div>', unsafe_allow_html=True)
+                with hero2:
+                    st.markdown('<div class="detail-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="detail-title">عدد الطلبات</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="detail-value">{format_money(row.get(orders_col, 0) if orders_col else 0)}</div>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
 
-                with c:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
-                    st.markdown('<div class="payroll-small">الراتب الأساسي</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="payroll-big">{format_money(row.get(base_col, 0) if base_col else 0)}</div>', unsafe_allow_html=True)
+                with hero3:
+                    st.markdown('<div class="detail-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="detail-title">الراتب الأساسي</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="detail-value">{format_money(row.get(base_col, 0) if base_col else 0)}</div>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
 
+                st.markdown("### 💰 ملخص الراتب")
+                s1, s2, s3, s4 = st.columns(4)
+
+                with s1:
+                    st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
+                    st.markdown("**الإضافي / المكافأة**")
+                    st.write(format_money(row.get(extra_col, 0) if extra_col else 0))
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                with s2:
+                    st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
+                    st.markdown("**خصم فارق الطلبات**")
+                    st.write(format_money(row.get("خصم فارق الطلبات", 0)))
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                with s3:
+                    st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
+                    st.markdown("**إضافة فارق الطلبات**")
+                    st.write(format_money(row.get("إضافة فارق الطلبات", 0)))
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                with s4:
+                    st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
+                    st.markdown("**الصافي**")
+                    st.write(format_money(row.get(net_col, 0) if net_col else 0))
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                st.markdown("### 📋 التفاصيل")
                 d1, d2, d3 = st.columns(3)
 
                 with d1:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="detail-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">الاستقطاعات الأساسية</div>', unsafe_allow_html=True)
                     st.write(f"**سلفيات:** {format_money(row.get(advance_col, 0) if advance_col else 0)}")
                     st.write(f"**خصم كيتا:** {format_money(row.get(keeta_col, 0) if keeta_col else 0)}")
                     st.write(f"**تأخير:** {format_money(row.get(late_col, 0) if late_col else 0)}")
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 with d2:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="detail-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">المصاريف والملاحظات</div>', unsafe_allow_html=True)
                     st.write(f"**بنزين:** {format_money(row.get(fuel_col, 0) if fuel_col else 0)}")
                     st.write(f"**محاضر مشرف:** {format_money(row.get(supervisor_col, 0) if supervisor_col else 0)}")
-                    st.write(f"**إضافي / مكافأة:** {format_money(row.get(extra_col, 0) if extra_col else 0)}")
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-                with d3:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
-                    st.write(f"**فارق الطلبات الناقص:** {format_money(row.get('فارق الطلبات الناقص', 0))}")
-                    st.write(f"**خصم فارق الطلبات:** {format_money(row.get('خصم فارق الطلبات', 0))}")
-                    st.write(f"**فارق الطلبات الزائد:** {format_money(row.get('فارق الطلبات الزائد', 0))}")
-                    st.write(f"**إضافة فارق الطلبات:** {format_money(row.get('إضافة فارق الطلبات', 0))}")
                     st.write(f"**خصم عام:** {format_money(row.get('خصم عام', 0))}")
                     st.markdown('</div>', unsafe_allow_html=True)
 
-                e1, e2 = st.columns(2)
-
-                with e1:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
+                with d3:
+                    st.markdown('<div class="detail-card">', unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">فارق الطلبات</div>', unsafe_allow_html=True)
+                    st.write(f"**فارق الطلبات الناقص:** {format_money(row.get('فارق الطلبات الناقص', 0))}")
+                    st.write(f"**فارق الطلبات الزائد:** {format_money(row.get('فارق الطلبات الزائد', 0))}")
                     st.write(f"**الإجمالي:** {format_money(row.get(total_col, 0) if total_col else 0)}")
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-                with e2:
-                    st.markdown('<div class="payroll-card">', unsafe_allow_html=True)
-                    st.write(f"**الصافي:** {format_money(row.get(net_col, 0) if net_col else 0)}")
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 with st.expander("عرض كل بيانات السائق"):
@@ -582,7 +646,11 @@ def page_payroll(enabled_files=None):
     with tab_export:
         st.markdown("### ⬇️ تنزيل الملف")
 
-        excel_data = to_excel_bytes(st.session_state.payroll_sheets)
+        export_sheets = {}
+        for sheet_name, sheet_df in st.session_state.payroll_sheets.items():
+            export_sheets[sheet_name] = combine_driver_names(sheet_df)
+
+        excel_data = to_excel_bytes(export_sheets)
 
         st.download_button(
             label="تنزيل ملف الرواتب المعدل",
