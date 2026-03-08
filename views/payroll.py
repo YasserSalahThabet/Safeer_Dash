@@ -41,23 +41,6 @@ def page_payroll(enabled_files=None):
         margin-bottom: 1rem;
         font-size: 1.02rem;
     }
-    .payroll-card {
-        padding: 1rem;
-        border-radius: 18px;
-        border: 1px solid rgba(255,255,255,0.08);
-        background: rgba(255,255,255,0.03);
-        margin-bottom: 1rem;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.15);
-    }
-    .payroll-small {
-        font-size: 0.9rem;
-        color: #9e9e9e;
-        margin-bottom: 0.25rem;
-    }
-    .payroll-big {
-        font-size: 1.35rem;
-        font-weight: 700;
-    }
     .detail-card {
         padding: 1rem 1.1rem;
         border-radius: 16px;
@@ -85,9 +68,6 @@ def page_payroll(enabled_files=None):
         background: rgba(255,255,255,0.03);
         border: 1px solid rgba(255,255,255,0.08);
         margin-bottom: 0.8rem;
-    }
-    div[data-testid="stTabs"] button {
-        font-size: 1rem;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -153,9 +133,6 @@ def page_payroll(enabled_files=None):
         return sheets
 
     def combine_driver_names(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Merge 'اسم السائق' and 'اسم السائق 1' into one display column.
-        """
         df = df.copy()
 
         first_col = "اسم السائق"
@@ -226,33 +203,50 @@ def page_payroll(enabled_files=None):
 
         return df
 
-    def recompute_payroll(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    def recompute_payroll(df: pd.DataFrame, mapping: dict, threshold: float) -> pd.DataFrame:
         df = df.copy()
 
+        orders_col = mapping.get("orders")
         base_col = mapping.get("base")
         extra_col = mapping.get("extra")
+        current_deductions_col = mapping.get("current_deductions")
         total_col = mapping.get("total")
         net_col = mapping.get("net")
 
-        if not base_col or base_col not in df.columns:
+        if not orders_col or orders_col not in df.columns:
             return df
 
-        base = safe_num_series(df[base_col]).fillna(0)
+        orders = safe_num_series(df[orders_col]).fillna(0)
 
-        extra = 0
+        # original base
+        if base_col and base_col in df.columns:
+            base_original = safe_num_series(df[base_col]).fillna(0)
+        else:
+            base_original = pd.Series(0.0, index=df.index)
+
+        # RULE:
+        # if orders < threshold -> ignore basic salary and use orders * 7
+        base_effective = np.where(orders < threshold, orders * 7, base_original)
+        df["الراتب الأساسي المعتمد"] = base_effective
+
+        extra = pd.Series(0.0, index=df.index)
         if extra_col and extra_col in df.columns:
             extra = safe_num_series(df[extra_col]).fillna(0)
 
+        current_deductions = pd.Series(0.0, index=df.index)
+        if current_deductions_col and current_deductions_col in df.columns:
+            current_deductions = safe_num_series(df[current_deductions_col]).fillna(0)
+
         overage_bonus = (
             safe_num_series(df["إضافة فارق الطلبات"]).fillna(0)
-            if "إضافة فارق الطلبات" in df.columns else 0
+            if "إضافة فارق الطلبات" in df.columns else pd.Series(0.0, index=df.index)
         )
         shortage_deduction = (
             safe_num_series(df["خصم فارق الطلبات"]).fillna(0)
-            if "خصم فارق الطلبات" in df.columns else 0
+            if "خصم فارق الطلبات" in df.columns else pd.Series(0.0, index=df.index)
         )
 
-        total_deductions = shortage_deduction
+        total_deductions = current_deductions + shortage_deduction
 
         deduction_keys = [
             "advance",
@@ -267,17 +261,23 @@ def page_payroll(enabled_files=None):
             if col and col in df.columns:
                 total_deductions = total_deductions + safe_num_series(df[col]).fillna(0)
 
-        total_value = base + extra + overage_bonus - total_deductions
+        df["إجمالي الخصومات المعتمدة"] = total_deductions
+
+        gross_value = pd.Series(base_effective, index=df.index) + extra + overage_bonus
+        final_value = gross_value - total_deductions
 
         if total_col:
             if total_col not in df.columns:
                 df[total_col] = 0.0
-            df[total_col] = total_value
+            df[total_col] = final_value
 
         if net_col:
             if net_col not in df.columns:
                 df[net_col] = 0.0
-            df[net_col] = total_value
+            df[net_col] = final_value
+
+        df["الإجمالي المعتمد"] = final_value
+        df["الصافي المعتمد"] = final_value
 
         return df
 
@@ -289,6 +289,7 @@ def page_payroll(enabled_files=None):
         output.seek(0)
         return output.getvalue()
 
+    # Session state
     if "payroll_sheets" not in st.session_state:
         st.session_state.payroll_sheets = {}
     if "payroll_original_sheets" not in st.session_state:
@@ -349,8 +350,11 @@ def page_payroll(enabled_files=None):
     sheet_names = list(st.session_state.payroll_sheets.keys())
     selected_sheet = st.selectbox("اختر الشيت", sheet_names, key="payroll_sheet_select")
 
-    # Always use the edited sheet if available, otherwise original
-    working_df = st.session_state.payroll_sheets.get(selected_sheet, st.session_state.payroll_original_sheets[selected_sheet]).copy()
+    working_df = st.session_state.payroll_sheets.get(
+        selected_sheet,
+        st.session_state.payroll_original_sheets[selected_sheet]
+    ).copy()
+
     base_df = combine_driver_names(working_df)
 
     top_left, top_right = st.columns([3, 1])
@@ -374,6 +378,7 @@ def page_payroll(enabled_files=None):
         guessed_late = guess_column(base_df, ["تأخير"])
         guessed_fuel = guess_column(base_df, ["بنزين"])
         guessed_supervisor = guess_column(base_df, ["محاضر مشرف"])
+        guessed_current_deductions = guess_column(base_df, ["خصميات", "الخصميات", "إجمالي الخصومات", "اجمالي الخصومات", "الاستقطاعات", "خصومات"])
         guessed_total = guess_column(base_df, ["اجمالي الراتب المستحق", "إجمالي الراتب المستحق", "الاجمالي"])
         guessed_net = guess_column(base_df, ["الصافي", "صافي"])
 
@@ -386,6 +391,12 @@ def page_payroll(enabled_files=None):
         late_col = st.selectbox("عمود تأخير", cols, index=cols.index(guessed_late) if guessed_late in cols else 0, key="payroll_late_col")
         fuel_col = st.selectbox("عمود بنزين", cols, index=cols.index(guessed_fuel) if guessed_fuel in cols else 0, key="payroll_fuel_col")
         supervisor_col = st.selectbox("عمود محاضر مشرف", cols, index=cols.index(guessed_supervisor) if guessed_supervisor in cols else 0, key="payroll_supervisor_col")
+        current_deductions_col = st.selectbox(
+            "عمود الخصميات الحالية",
+            cols,
+            index=cols.index(guessed_current_deductions) if guessed_current_deductions in cols else 0,
+            key="payroll_current_deductions_col"
+        )
         total_col = st.selectbox("عمود الإجمالي", cols, index=cols.index(guessed_total) if guessed_total in cols else 0, key="payroll_total_col")
         net_col = st.selectbox("عمود الصافي", cols, index=cols.index(guessed_net) if guessed_net in cols else 0, key="payroll_net_col")
 
@@ -399,6 +410,7 @@ def page_payroll(enabled_files=None):
         "late": late_col if late_col else None,
         "fuel": fuel_col if fuel_col else None,
         "supervisor": supervisor_col if supervisor_col else None,
+        "current_deductions": current_deductions_col if current_deductions_col else None,
         "total": total_col if total_col else None,
         "net": net_col if net_col else None,
         "general_deduction": "خصم عام",
@@ -455,23 +467,10 @@ def page_payroll(enabled_files=None):
                 key="payroll_cfg_global_deduction"
             )
 
-        st.markdown("### المعاينة الحالية")
-        v1, v2, v3, v4 = st.columns(4)
-
-        with v1:
-            st.metric("حد الطلبات", format_money(st.session_state.payroll_order_threshold))
-        with v2:
-            st.metric("سعر الفارق", format_money(st.session_state.payroll_difference_rate))
-        with v3:
-            st.metric("مكافأة جماعية", format_money(st.session_state.payroll_global_bonus))
-        with v4:
-            st.metric("خصم جماعي", format_money(st.session_state.payroll_global_deduction))
-
         st.info(
             f"إذا كان عدد الطلبات أقل من {format_money(st.session_state.payroll_order_threshold)} "
-            f"فسيتم احتساب خصم فارق الطلبات = (الحد - عدد الطلبات) × {format_money(st.session_state.payroll_difference_rate)}. "
-            f"وإذا كان عدد الطلبات أعلى من {format_money(st.session_state.payroll_order_threshold)} "
-            f"فسيتم احتساب إضافة فارق الطلبات = (عدد الطلبات - الحد) × {format_money(st.session_state.payroll_difference_rate)}."
+            f"فسيتم اعتماد الراتب الأساسي = عدد الطلبات × 7، "
+            f"مع استمرار احتساب الخصميات الحالية وباقي الخصومات."
         )
 
     df = base_df.copy()
@@ -479,7 +478,7 @@ def page_payroll(enabled_files=None):
     numeric_cols = [
         c for c in [
             orders_col, base_col, extra_col, advance_col, keeta_col,
-            late_col, fuel_col, supervisor_col, total_col, net_col
+            late_col, fuel_col, supervisor_col, current_deductions_col, total_col, net_col
         ] if c
     ]
     df = ensure_numeric_columns(df, numeric_cols)
@@ -503,7 +502,11 @@ def page_payroll(enabled_files=None):
             rate=st.session_state.payroll_difference_rate
         )
 
-    df = recompute_payroll(df, mapping)
+    df = recompute_payroll(
+        df,
+        mapping,
+        threshold=st.session_state.payroll_order_threshold
+    )
 
     st.markdown("### 📊 الملخص")
     m1, m2, m3, m4 = st.columns(4)
@@ -518,16 +521,10 @@ def page_payroll(enabled_files=None):
             st.metric("مجموع الطلبات", "—")
 
     with m3:
-        if total_col and total_col in df.columns:
-            st.metric("مجموع الإجمالي", format_money(safe_num_series(df[total_col]).fillna(0).sum()))
-        else:
-            st.metric("مجموع الإجمالي", "—")
+        st.metric("مجموع الإجمالي المعتمد", format_money(safe_num_series(df["الإجمالي المعتمد"]).fillna(0).sum()))
 
     with m4:
-        if net_col and net_col in df.columns:
-            st.metric("مجموع الصافي", format_money(safe_num_series(df[net_col]).fillna(0).sum()))
-        else:
-            st.metric("مجموع الصافي", "—")
+        st.metric("مجموع الخصومات المعتمدة", format_money(safe_num_series(df["إجمالي الخصومات المعتمدة"]).fillna(0).sum()))
 
     with tab_table:
         st.markdown("### ✍️ تعديل الجدول")
@@ -540,7 +537,6 @@ def page_payroll(enabled_files=None):
             key=f"payroll_editor_{selected_sheet}"
         )
 
-        # Keep edited version in state
         st.session_state.payroll_sheets[selected_sheet] = edited_df.copy()
 
     with tab_driver:
@@ -576,8 +572,8 @@ def page_payroll(enabled_files=None):
 
                 with hero3:
                     st.markdown('<div class="detail-card">', unsafe_allow_html=True)
-                    st.markdown('<div class="detail-title">الراتب الأساسي</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="detail-value">{format_money(row.get(base_col, 0) if base_col else 0)}</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="detail-title">الراتب الأساسي المعتمد</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="detail-value">{format_money(row.get("الراتب الأساسي المعتمد", 0))}</div>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 st.markdown("### 💰 ملخص الراتب")
@@ -591,20 +587,20 @@ def page_payroll(enabled_files=None):
 
                 with s2:
                     st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
-                    st.markdown("**خصم فارق الطلبات**")
-                    st.write(format_money(row.get("خصم فارق الطلبات", 0)))
+                    st.markdown("**الخصميات الحالية**")
+                    st.write(format_money(row.get(current_deductions_col, 0) if current_deductions_col else 0))
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 with s3:
                     st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
-                    st.markdown("**إضافة فارق الطلبات**")
-                    st.write(format_money(row.get("إضافة فارق الطلبات", 0)))
+                    st.markdown("**خصم فارق الطلبات**")
+                    st.write(format_money(row.get("خصم فارق الطلبات", 0)))
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 with s4:
                     st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
-                    st.markdown("**الصافي**")
-                    st.write(format_money(row.get(net_col, 0) if net_col else 0))
+                    st.markdown("**الصافي المعتمد**")
+                    st.write(format_money(row.get("الصافي المعتمد", 0)))
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 st.markdown("### 📋 التفاصيل")
@@ -612,7 +608,7 @@ def page_payroll(enabled_files=None):
 
                 with d1:
                     st.markdown('<div class="detail-card">', unsafe_allow_html=True)
-                    st.markdown('<div class="section-title">الاستقطاعات الأساسية</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">الخصومات الأساسية</div>', unsafe_allow_html=True)
                     st.write(f"**سلفيات:** {format_money(row.get(advance_col, 0) if advance_col else 0)}")
                     st.write(f"**خصم كيتا:** {format_money(row.get(keeta_col, 0) if keeta_col else 0)}")
                     st.write(f"**تأخير:** {format_money(row.get(late_col, 0) if late_col else 0)}")
@@ -620,18 +616,20 @@ def page_payroll(enabled_files=None):
 
                 with d2:
                     st.markdown('<div class="detail-card">', unsafe_allow_html=True)
-                    st.markdown('<div class="section-title">المصاريف والملاحظات</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">مصروفات وخصومات إضافية</div>', unsafe_allow_html=True)
                     st.write(f"**بنزين:** {format_money(row.get(fuel_col, 0) if fuel_col else 0)}")
                     st.write(f"**محاضر مشرف:** {format_money(row.get(supervisor_col, 0) if supervisor_col else 0)}")
                     st.write(f"**خصم عام:** {format_money(row.get('خصم عام', 0))}")
+                    st.write(f"**إجمالي الخصومات المعتمدة:** {format_money(row.get('إجمالي الخصومات المعتمدة', 0))}")
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 with d3:
                     st.markdown('<div class="detail-card">', unsafe_allow_html=True)
-                    st.markdown('<div class="section-title">فارق الطلبات</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">فارق الطلبات والإجمالي</div>', unsafe_allow_html=True)
                     st.write(f"**فارق الطلبات الناقص:** {format_money(row.get('فارق الطلبات الناقص', 0))}")
                     st.write(f"**فارق الطلبات الزائد:** {format_money(row.get('فارق الطلبات الزائد', 0))}")
-                    st.write(f"**الإجمالي:** {format_money(row.get(total_col, 0) if total_col else 0)}")
+                    st.write(f"**إضافة فارق الطلبات:** {format_money(row.get('إضافة فارق الطلبات', 0))}")
+                    st.write(f"**الإجمالي المعتمد:** {format_money(row.get('الإجمالي المعتمد', 0))}")
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 with st.expander("عرض كل بيانات السائق"):
