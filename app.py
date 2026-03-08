@@ -43,7 +43,6 @@ def inject_global_css():
     st.markdown(
         """
         <style>
-        /* Fix top crop globally */
         .block-container {
             padding-top: 2.4rem !important;
             padding-bottom: 1.5rem !important;
@@ -53,7 +52,6 @@ def inject_global_css():
             padding-top: 1.4rem !important;
         }
 
-        /* hide streamlit chrome */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
@@ -81,10 +79,9 @@ def inject_global_css():
             border: 1px solid rgba(255,255,255,0.08);
         }
 
-        /* Full-width banner */
         .safeer-banner {
             width: 100%;
-            height: 320px;
+            height: 420px;
             border-radius: 16px;
             overflow: hidden;
             background-position: center;
@@ -95,7 +92,7 @@ def inject_global_css():
         }
 
         @media (max-width: 900px) {
-            .safeer-banner { height: 220px; }
+            .safeer-banner { height: 260px; }
         }
         </style>
         """,
@@ -213,7 +210,7 @@ def main():
     uploaded_files, enabled_files, search, min_delivery, max_cancel = sidebar_controls(role)
     sidebar_announcements(role)
 
-    # Build operational master/filtered data for non-payroll pages
+    # Build operational master/filtered data
     result = build_master_from_uploads(enabled_files, search, min_delivery, max_cancel)
     master_all, filtered_df = _split_master_and_filtered(result)
 
@@ -225,10 +222,7 @@ def main():
             page_admin(filtered_df)
 
     elif role == "التشغيل":
-        try:
-            page_ops(master_all, filtered_df)
-        except TypeError:
-            page_ops(filtered_df)
+        page_ops(master_all, filtered_df)
 
     elif role == "الموارد البشرية":
         page_hr()
