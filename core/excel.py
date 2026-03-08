@@ -21,7 +21,7 @@ PERF_COLS = {
     ],
     "first_name": ["اسم السائق", "First Name", "first_name", "الاسم الأول", "اسم الموظف"],
     "last_name": ["اسم السائق.1", "Last Name", "last_name", "الاسم الأخير", "اسم الموظف.1"],
-    "full_name": ["اسم السائق الكامل", "اسم الموظف", "Driver Name", "driver_name", "اسم السائق"],
+    "full_name": ["اسم السائق الكامل", "اسم الموظف", "Driver Name", "driver_name", "اسم السائق", "Driver_Name"],
 
     "delivery_rate": [
         "معدل اكتمال الطلبات (غير متعلق بالتوصيل)",
@@ -104,17 +104,15 @@ def _normalize_vr_series(s: pd.Series) -> pd.Series:
     Convert common VR-like values into numeric:
     yes/true/pass -> 1
     no/false/fail -> 0
-    numeric strings remain numeric
+    numeric strings stay numeric
     """
     if s is None:
         return pd.Series(dtype="float64")
 
     raw = s.copy()
 
-    # direct numeric first
     numeric = pd.to_numeric(raw, errors="coerce")
 
-    # fill text-like values where numeric failed
     txt = raw.astype(str).str.strip().str.lower()
     mapped = txt.map({
         "pass": 1,
@@ -140,7 +138,7 @@ def _normalize_vr_series(s: pd.Series) -> pd.Series:
 # =========================
 def detect_file_kind(cols: set[str]) -> str:
     perf_signals = {
-        "معرّف السائق", "معرف السائق", "اسم السائق", "اسم السائق.1",
+        "معرّف السائق", "معرف السائق", "اسم السائق", "اسم السائق.1", "Driver_Name",
         "معدل الإلغاء بسبب مشاكل التوصيل", "معدل الغاء", "معدل توصيل",
         "المهام التي تم تسليمها", "طلبات", "المهام المرفوضة",
         "المهام المرفوضة (السائق)", "عدد الطلبات",
@@ -148,7 +146,7 @@ def detect_file_kind(cols: set[str]) -> str:
 
     vrvda_signals = {
         "VR", "vr", "if_triggered_today", "is_self_delivery_final",
-        "VDA", "vda", "Face Recognition", "Face_Recognition", "مؤشر VDA"
+        "VDA", "vda", "مؤشر VDA", "VDA Score", "VDA%", "VDA %", "VDA score"
     }
 
     if len(perf_signals.intersection(cols)) >= 3:
@@ -215,7 +213,7 @@ def parse_performance(df_raw: pd.DataFrame) -> pd.DataFrame:
     else:
         out["اعدد ايام العمل"] = pd.NA
 
-    # Optional VR / VDA if the performance file already has them
+    # Optional VR / VDA if already in performance file
     if mapped.get("vr") and mapped["vr"] in df_raw.columns:
         out["VR"] = _normalize_vr_series(df_raw[mapped["vr"]]).fillna(0)
     else:
@@ -240,40 +238,67 @@ def parse_vrvda(df_raw: pd.DataFrame) -> pd.DataFrame:
     Match ONLY by rider/driver ID
     Ignore city / 3PL / company columns
     """
-    # Standard header format
     id_col = pick(df_raw.columns, VRVDA_COLS["driver_id"])
     vr_col = pick(df_raw.columns, VRVDA_COLS["vr"])
     vda_col = pick(df_raw.columns, VRVDA_COLS["vda"])
 
+    # -------- Standard header format --------
     if id_col and (vr_col or vda_col):
         tmp = pd.DataFrame({
             "معرّف السائق": safe_to_numeric(df_raw[id_col]).astype("Int64")
         })
 
         if vr_col:
-            tmp["VR"] = _normalize_vr_series(df_raw[vr_col]).fillna(0)
+            tmp["VR"] = _normalize_vr_series(df_raw[vr_col])
 
         if vda_col:
-            tmp["VDA"] = safe_to_numeric(df_raw[vda_col]).fillna(0)
+            tmp["VDA"] = safe_to_numeric(df_raw[vda_col])
 
-        return tmp.dropna(subset=["معرّف السائق"]).drop_duplicates("معرّف السائق")
+        tmp = tmp.dropna(subset=["معرّف السائق"]).copy()
 
-    # No-header / weird export:
-    # common pattern: col 1 = driver_id, col 9 = VDA
+        # aggregate to ONE row per driver
+        agg_map = {}
+        if "VR" in tmp.columns:
+            # sum positive hits so you see actual numbers
+            agg_map["VR"] = "sum"
+        if "VDA" in tmp.columns:
+            # use max/latest-like numeric strength
+            agg_map["VDA"] = "max"
+
+        tmp = tmp.groupby("معرّف السائق", as_index=False).agg(agg_map)
+        return tmp
+
+    # -------- No-header / weird export --------
+    # common pattern in your file:
+    # col 6 = rider/driver id
+    # col 9 = VDA numeric
+    # col 8 may be VR-like
     if all(isinstance(c, (int, np.integer)) for c in df_raw.columns):
-        if 1 in df_raw.columns:
+        id_candidates = [6, 1]   # prefer rider id in col 6, fallback to old logic col 1
+        id_col_num = next((c for c in id_candidates if c in df_raw.columns), None)
+
+        if id_col_num is not None:
             tmp = pd.DataFrame({
-                "معرّف السائق": safe_to_numeric(df_raw[1]).astype("Int64")
+                "معرّف السائق": safe_to_numeric(df_raw[id_col_num]).astype("Int64")
             })
 
-            # If column 8 exists, use it as VR only if clearly intended
             if 8 in df_raw.columns:
-                tmp["VR"] = safe_to_numeric(df_raw[8]).fillna(0)
+                tmp["VR"] = safe_to_numeric(df_raw[8], errors="coerce")
 
             if 9 in df_raw.columns:
-                tmp["VDA"] = safe_to_numeric(df_raw[9]).fillna(0)
+                tmp["VDA"] = safe_to_numeric(df_raw[9], errors="coerce")
 
-            return tmp.dropna(subset=["معرّف السائق"]).drop_duplicates("معرّف السائق")
+            tmp = tmp.dropna(subset=["معرّف السائق"]).copy()
+
+            agg_map = {}
+            if "VR" in tmp.columns:
+                agg_map["VR"] = "sum"
+            if "VDA" in tmp.columns:
+                agg_map["VDA"] = "max"
+
+            if agg_map:
+                tmp = tmp.groupby("معرّف السائق", as_index=False).agg(agg_map)
+                return tmp
 
     return pd.DataFrame(columns=["معرّف السائق", "VR", "VDA"])
 
@@ -318,12 +343,12 @@ def build_master_from_uploads(enabled_files, search: str, min_delivery: float, m
     for uf in enabled_files:
         b = uf.getvalue()
 
-        # try normal header
+        # normal header first
         df_h = read_first_sheet_excel_bytes(b, header=0)
         kind = detect_file_kind(set(df_h.columns))
         df_use = df_h
 
-        # try no-header for weird VR/VDA exports
+        # no-header fallback for weird VR/VDA exports
         if kind == "unknown":
             df_nh = read_first_sheet_excel_bytes(b, header=None)
             if all(isinstance(c, (int, np.integer)) for c in df_nh.columns):
@@ -358,7 +383,7 @@ def build_master_from_uploads(enabled_files, search: str, min_delivery: float, m
 
     master = perf.copy()
 
-    # Merge VR / VDA from any separate vrvda file
+    # Merge VR / VDA from separate files
     for item in file_items:
         if item["name"] == perf_item["name"]:
             continue
@@ -369,13 +394,18 @@ def build_master_from_uploads(enabled_files, search: str, min_delivery: float, m
         if len(vrvda):
             master = master.merge(vrvda, on="معرّف السائق", how="left", suffixes=("", "_y"))
 
-            # clean duplicate columns created by merge
             if "VR_y" in master.columns:
-                master["VR"] = master["VR"].fillna(master["VR_y"]) if "VR" in master.columns else master["VR_y"]
+                if "VR" in master.columns:
+                    master["VR"] = master["VR"].fillna(master["VR_y"])
+                else:
+                    master["VR"] = master["VR_y"]
                 master = master.drop(columns=["VR_y"])
 
             if "VDA_y" in master.columns:
-                master["VDA"] = master["VDA"].fillna(master["VDA_y"]) if "VDA" in master.columns else master["VDA_y"]
+                if "VDA" in master.columns:
+                    master["VDA"] = master["VDA"].fillna(master["VDA_y"])
+                else:
+                    master["VDA"] = master["VDA_y"]
                 master = master.drop(columns=["VDA_y"])
 
     if "VR" in master.columns:
@@ -433,5 +463,6 @@ def build_master_from_uploads(enabled_files, search: str, min_delivery: float, m
 
     f["ترتيب المتابعة"] = range(1, len(f) + 1)
 
-    # Return filtered first, master second to stay compatible with your current app split helper
+    # Keep current app.py compatibility:
+    # return filtered first, master second
     return f, master
